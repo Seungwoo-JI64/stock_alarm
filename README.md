@@ -26,7 +26,7 @@ stock_alarm/
 
 ## 데이터 파이프라인
 
-1. `pipeline/run.py`는 `us_tickers.csv`에서 티커를 읽고, 200개 단위 배치로 순차 처리합니다. 각 배치마다 `yfinance.Ticker().history(period="1d")`를 우선 호출하고, 데이터가 부족하면 `start/end` 범위와 `period="3d"`를 순차적으로 시도합니다. 배치 간에는 기본 10초씩 대기합니다.
+1. `pipeline/run.py`는 `us_tickers.csv`에서 티커를 읽고, 200개 단위 배치로 순차 처리합니다. 각 배치마다 `yfinance.Ticker().history(period="3d")`를 우선 호출하고, 부족하면 `start/end` 범위, 마지막으로 `period="5d"`를 시도합니다. 배치 간에는 기본 10초씩 대기합니다.
 2. 스크립트는 아래 지표를 계산합니다.
    - `volume_change_pct`: 직전 거래일 대비 거래량 증감 비율(%)
    - `volume_ratio`: 최신 거래량 ÷ 직전 거래량

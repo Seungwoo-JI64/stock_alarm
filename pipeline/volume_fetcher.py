@@ -85,7 +85,7 @@ def _fetch_history_for_ticker(ticker: str, settings: Settings) -> Optional[pd.Da
     end_window = (now_utc + timedelta(days=1)).date()
 
     strategies = [
-        ("period=1d", {"period": "1d"}),
+        (f"period={settings.yf_period}", {"period": settings.yf_period}),
         (
             "start-end",
             {
@@ -93,7 +93,7 @@ def _fetch_history_for_ticker(ticker: str, settings: Settings) -> Optional[pd.Da
                 "end": end_window,
             },
         ),
-        (f"period={settings.yf_period}", {"period": settings.yf_period}),
+        ("period=5d", {"period": "5d"}),
     ]
 
     last_history: Optional[pd.DataFrame] = None
@@ -125,7 +125,7 @@ def _fetch_history_for_ticker(ticker: str, settings: Settings) -> Optional[pd.Da
                     continue
 
             if _has_sufficient_volume(history):
-                if label != "period=1d":
+                if label != f"period={settings.yf_period}":
                     logger.debug("Fetched %s using %s", ticker, label)
                 return history
 
