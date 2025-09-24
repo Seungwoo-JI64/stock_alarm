@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional
+import time
 
 import pandas as pd
 import yfinance as yf
@@ -12,6 +13,20 @@ import yfinance as yf
 from .config import Settings
 
 logger = logging.getLogger(__name__)
+
+
+RATE_LIMIT_PATTERNS = (
+    "Too Many Requests",
+    "Rate limit",
+    "YFRateLimitError",
+)
+
+RATE_LIMIT_BACKOFF_SECONDS = (300, 600, 1200)
+
+
+class RateLimitExceeded(RuntimeError):
+    """Raised when Yahoo Finance rate limiting is detected."""
+
 
 
 @dataclass(frozen=True)
@@ -45,13 +60,22 @@ def chunked(iterable: Iterable[str], size: int) -> Iterator[List[str]]:
         yield chunk
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(pattern.lower() in message for pattern in RATE_LIMIT_PATTERNS)
+
+
 def _has_sufficient_volume(df: Optional[pd.DataFrame]) -> bool:
     if df is None or df.empty:
         return False
     if "Volume" not in df.columns:
         return False
     volume = pd.to_numeric(df["Volume"], errors="coerce").dropna()
-    return len(volume) >= 2
+    if len(volume) < 2:
+        return False
+    if (volume <= 0).any():
+        return False
+    return True
 
 
 def _fetch_history_for_ticker(ticker: str, settings: Settings) -> Optional[pd.DataFrame]:
@@ -85,6 +109,8 @@ def _fetch_history_for_ticker(ticker: str, settings: Settings) -> Optional[pd.Da
                 )
                 last_history = history
             except Exception as exc:  # pragma: no cover - defensive
+                if _is_rate_limit_error(exc):
+                    raise RateLimitExceeded(str(exc)) from exc
                 logger.warning(
                     "History request failed for %s (%s %d/%d): %s",
                     ticker,
@@ -111,6 +137,43 @@ def _fetch_history_for_ticker(ticker: str, settings: Settings) -> Optional[pd.Da
             break
 
     return last_history
+
+
+def _process_batch(batch: List[str], settings: Settings) -> List[VolumeSnapshot]:
+    batch_results: List[VolumeSnapshot] = []
+    for ticker in batch:
+        try:
+            history = _fetch_history_for_ticker(ticker, settings)
+        except RateLimitExceeded:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to download history for %s: %s", ticker, exc)
+            continue
+
+        if history is None or history.empty:
+            logger.debug("No history returned for %s", ticker)
+            continue
+
+        try:
+            series = _extract_volume_frame(history, ticker)
+        except Exception as exc:  # pragma: no cover - defensive
+            if _is_rate_limit_error(exc):
+                raise RateLimitExceeded(str(exc)) from exc
+            logger.warning("Failed to parse volume data for %s: %s", ticker, exc)
+            continue
+
+        if series is None:
+            logger.debug("Skipping %s due to insufficient data", ticker)
+            continue
+
+        snapshot = _build_snapshot(ticker, series)
+        if snapshot is None:
+            logger.debug("Skipping %s due to non-positive volumes", ticker)
+            continue
+
+        batch_results.append(snapshot)
+
+    return batch_results
 
 
 def _extract_volume_frame(raw: pd.DataFrame, ticker: str) -> Optional[pd.Series]:
@@ -144,20 +207,18 @@ def _extract_volume_frame(raw: pd.DataFrame, ticker: str) -> Optional[pd.Series]
     return volume_series
 
 
-def _build_snapshot(ticker: str, series: pd.Series) -> VolumeSnapshot:
+def _build_snapshot(ticker: str, series: pd.Series) -> Optional[VolumeSnapshot]:
     latest_volume = int(series.iloc[-1])
     previous_volume = int(series.iloc[-2])
     last_trade_date = series.index[-1].to_pydatetime()
     previous_trade_date = series.index[-2].to_pydatetime()
 
-    if previous_volume <= 0:
-        volume_ratio = None
-        volume_change_pct = None
-        is_spike = False
-    else:
-        volume_ratio = latest_volume / previous_volume
-        volume_change_pct = (latest_volume - previous_volume) / previous_volume * 100
-        is_spike = volume_ratio >= 2.0
+    if latest_volume <= 0 or previous_volume <= 0:
+        return None
+
+    volume_ratio = latest_volume / previous_volume
+    volume_change_pct = (latest_volume - previous_volume) / previous_volume * 100
+    is_spike = volume_ratio >= 2.0
 
     return VolumeSnapshot(
         ticker=ticker,
@@ -175,33 +236,57 @@ def fetch_snapshots(settings: Settings, tickers_override: List[str] | None = Non
     tickers = tickers_override or load_tickers(settings.tickers_file)
     logger.info("Loaded %d tickers", len(tickers))
 
+    if not tickers:
+        return []
+
     results: List[VolumeSnapshot] = []
-    for idx, ticker in enumerate(tickers, start=1):
+    total = len(tickers)
+    batch_size = max(1, settings.chunk_size)
+    pause_seconds = max(0, settings.batch_pause_seconds)
+    batch_start = 0
+    rate_limit_attempt = 0
+
+    while batch_start < total:
+        batch = tickers[batch_start : batch_start + batch_size]
+        logger.info(
+            "Processing tickers %d-%d",
+            batch_start + 1,
+            min(total, batch_start + len(batch)),
+        )
+
         try:
-            history = _fetch_history_for_ticker(ticker, settings)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Failed to download history for %s: %s", ticker, exc)
+            batch_results = _process_batch(batch, settings)
+        except RateLimitExceeded as exc:
+            if rate_limit_attempt >= len(RATE_LIMIT_BACKOFF_SECONDS):
+                logger.error(
+                    "Rate limit persisted after %d attempts; stopping early with %d snapshots collected. Last error: %s",
+                    rate_limit_attempt,
+                    len(results),
+                    exc,
+                )
+                return results
+
+            wait_seconds = RATE_LIMIT_BACKOFF_SECONDS[rate_limit_attempt]
+            rate_limit_attempt += 1
+            logger.warning(
+                "Rate limit encountered (attempt %d/%d). Waiting %d seconds before retrying batch starting at index %d.",
+                rate_limit_attempt,
+                len(RATE_LIMIT_BACKOFF_SECONDS),
+                wait_seconds,
+                batch_start,
+            )
+            time.sleep(wait_seconds)
             continue
 
-        if history is None or history.empty:
-            logger.debug("No history returned for %s", ticker)
-            continue
+        rate_limit_attempt = 0
+        results.extend(batch_results)
+        batch_start += len(batch)
 
-        try:
-            series = _extract_volume_frame(history, ticker)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Failed to parse volume data for %s: %s", ticker, exc)
-            continue
-
-        if series is None:
-            logger.debug("Skipping %s due to insufficient data", ticker)
-            continue
-
-        snapshot = _build_snapshot(ticker, series)
-        results.append(snapshot)
-
-        if idx % 500 == 0:
-            logger.info("Processed %d tickers", idx)
+        if batch_start < total and pause_seconds:
+            logger.debug(
+                "Sleeping %d seconds before processing next batch", pause_seconds
+            )
+            time.sleep(pause_seconds)
 
     logger.info("Generated %d snapshots", len(results))
     return results

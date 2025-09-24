@@ -26,12 +26,13 @@ stock_alarm/
 
 ## 데이터 파이프라인
 
-1. `pipeline/run.py`는 `us_tickers.csv`에서 티커를 읽고, `yfinance`를 통해 최근 1~5일간의 OHLCV 데이터를 받아 `VolumeSnapshot` 레코드를 생성합니다.
+1. `pipeline/run.py`는 `us_tickers.csv`에서 티커를 읽고, 200개 단위 배치로 순차 처리합니다. 각 배치마다 `yfinance.Ticker().history(period="1d")`를 우선 호출하고, 데이터가 부족하면 `start/end` 범위와 `period="3d"`를 순차적으로 시도합니다. 배치 간에는 기본 10초씩 대기합니다.
 2. 스크립트는 아래 지표를 계산합니다.
    - `volume_change_pct`: 직전 거래일 대비 거래량 증감 비율(%)
    - `volume_ratio`: 최신 거래량 ÷ 직전 거래량
    - `is_spike`: `volume_ratio >= 2`일 때 `True`로 표기하여 2배 이상 급증한 종목 강조
    - `fetched_at_*`: 수집 시점을 UTC와 KST(UTC+09:00)로 모두 기록하여 운영자의 표준시를 반영
+   - 거래량 데이터가 두 날짜 이상 존재하고 두 값 모두 0보다 큰 경우에만 백분율을 산출한 뒤 업로드합니다.
 3. 결과는 Supabase REST API로 업로드되며, 실행마다 부여되는 `batch_id`로 히스토리를 구분합니다.
 
 ### 로컬 실행 방법
@@ -51,7 +52,7 @@ python -m pipeline.run --log-level DEBUG  # 빠른 검증용 --limit 20 옵션 �
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 
-필요하다면 워크플로 `env` 블록에서 `CHUNK_SIZE` 등 값을 덮어쓸 수 있습니다.
+필요하다면 워크플로 `env` 블록에서 `CHUNK_SIZE`, `BATCH_PAUSE_SECONDS`, `YF_PERIOD` 등을 덮어쓸 수 있습니다.
 
 ## Supabase 설정
 
@@ -113,7 +114,7 @@ Supabase 자격 증명은 서버 측 환경 변수로 관리되고, 브라우저
 
 - Yahoo Finance의 일봉 데이터는 UTC 기준으로 확정되며, 미국 거래일의 `last_trade_date`가 최신 장 마감 날짜를 가리키지만 공개 시점이 지연될 수 있습니다.
 - 파이프라인은 `fetched_at_utc`와 `fetched_at_kst`를 모두 저장해 운영자의 현지 시간과 UTC를 함께 제공합니다.
-- 주말/공휴일에는 직전 거래일 데이터가 반복되어 반환될 수 있으며, 유효한 두 개의 거래량 값이 없는 경우 해당 티커는 배치에서 제외됩니다.
+- 주말/공휴일에는 직전 거래일 데이터가 반복되어 반환될 수 있으며, 유효한 두 개의 거래량 값 또는 0이 아닌 값이 확보되지 않으면 해당 티커는 배치에서 제외됩니다.
 
 ## 페이지네이션 전략
 
@@ -126,7 +127,7 @@ Supabase 자격 증명은 서버 측 환경 변수로 관리되고, 브라우저
 
 ## 운영 팁
 
-- Yahoo Finance는 요청 빈도 제한을 두고 있으므로, `CHUNK_SIZE`(기본 50)를 모니터링하며 적절히 조정하세요.
+- Yahoo Finance는 요청 빈도 제한을 두고 있습니다. 기본 200개 배치를 처리하며, 배치마다 10초 대기하고 `Too Many Requests`가 감지되면 5분→10분→20분 순으로 최대 세 번 재시도합니다. 이후에도 해소되지 않으면 부분 결과만 업로드하고 프로세스를 종료합니다.
 - 공휴일 이후처럼 데이터가 누락되는 경우 `YF_PERIOD`를 `7d` 이상으로 늘려 최소 두 개의 유효 캔들이 수집되도록 할 수 있습니다.
 - GitHub Actions 실행 시간이 60분을 넘지 않도록 주기적으로 확인하고, 필요 시 청크 크기를 줄이거나 작업을 병렬화합니다.
 
