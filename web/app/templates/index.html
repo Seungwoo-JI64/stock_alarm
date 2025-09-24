@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stock Alarm</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>US Volume Spike Monitor</h1>
+        <p>Latest trading volume changes for US equities. Data sorted by % change.</p>
+      </header>
+
+      <section class="controls">
+        <div class="pagination">
+          <button id="prev-btn" disabled>Previous</button>
+          <span id="page-indicator">Page 1</span>
+          <button id="next-btn" disabled>Next</button>
+        </div>
+        <div class="page-size">
+          <label for="page-size-select">Rows per page</label>
+          <select id="page-size-select"></select>
+        </div>
+      </section>
+
+      <section class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Last Trade Date</th>
+              <th>Prev Trade Date</th>
+              <th>Latest Volume</th>
+              <th>Previous Volume</th>
+              <th>Change %</th>
+              <th>Ratio</th>
+            </tr>
+          </thead>
+          <tbody id="table-body"></tbody>
+        </table>
+      </section>
+
+      <footer class="footer">
+        <span id="last-updated"></span>
+      </footer>
+    </main>
+
+    <script>
+      window.PAGE_SIZE_DEFAULT = {{ page_size_default | tojson }};
+    </script>
+    <script src="/static/main.js" type="module"></script>
+  </body>
+</html>
