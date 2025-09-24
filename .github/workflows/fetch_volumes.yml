@@ -2,7 +2,7 @@ name: Fetch Volume Snapshots
 
 on:
   schedule:
-    - cron: '0 0,6,12,18 * * *'
+    - cron: '0 5,11,17,23 * * *'
   workflow_dispatch:
 
 concurrency:
