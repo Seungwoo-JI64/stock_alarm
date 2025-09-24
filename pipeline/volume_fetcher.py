@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional
 
@@ -43,6 +43,74 @@ def chunked(iterable: Iterable[str], size: int) -> Iterator[List[str]]:
             chunk = []
     if chunk:
         yield chunk
+
+
+def _has_sufficient_volume(df: Optional[pd.DataFrame]) -> bool:
+    if df is None or df.empty:
+        return False
+    if "Volume" not in df.columns:
+        return False
+    volume = pd.to_numeric(df["Volume"], errors="coerce").dropna()
+    return len(volume) >= 2
+
+
+def _fetch_history_for_ticker(ticker: str, settings: Settings) -> Optional[pd.DataFrame]:
+    ticker_client = yf.Ticker(ticker)
+    now_utc = datetime.now(timezone.utc)
+    start_window = (now_utc - timedelta(days=7)).date()
+    end_window = (now_utc + timedelta(days=1)).date()
+
+    strategies = [
+        ("period=1d", {"period": "1d"}),
+        (
+            "start-end",
+            {
+                "start": start_window,
+                "end": end_window,
+            },
+        ),
+        (f"period={settings.yf_period}", {"period": settings.yf_period}),
+    ]
+
+    last_history: Optional[pd.DataFrame] = None
+
+    for label, kwargs in strategies:
+        for attempt in range(1, settings.max_retries + 1):
+            try:
+                history = ticker_client.history(
+                    interval=settings.yf_interval,
+                    auto_adjust=False,
+                    actions=False,
+                    **kwargs,
+                )
+                last_history = history
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "History request failed for %s (%s %d/%d): %s",
+                    ticker,
+                    label,
+                    attempt,
+                    settings.max_retries,
+                    exc,
+                )
+                if attempt == settings.max_retries:
+                    history = None
+                else:
+                    continue
+
+            if _has_sufficient_volume(history):
+                if label != "period=1d":
+                    logger.debug("Fetched %s using %s", ticker, label)
+                return history
+
+            logger.debug(
+                "Insufficient data for %s using %s; trying next strategy",
+                ticker,
+                label,
+            )
+            break
+
+    return last_history
 
 
 def _extract_volume_frame(raw: pd.DataFrame, ticker: str) -> Optional[pd.Series]:
@@ -108,47 +176,32 @@ def fetch_snapshots(settings: Settings, tickers_override: List[str] | None = Non
     logger.info("Loaded %d tickers", len(tickers))
 
     results: List[VolumeSnapshot] = []
-    for chunk in chunked(tickers, settings.chunk_size):
-        logger.debug("Downloading chunk of %d tickers", len(chunk))
-
-        data = None
-        for attempt in range(1, settings.max_retries + 1):
-            try:
-                data = yf.download(
-                    tickers=chunk,
-                    period=settings.yf_period,
-                    interval=settings.yf_interval,
-                    group_by="ticker",
-                    auto_adjust=False,
-                    threads=True,
-                    progress=False,
-                )
-                break
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning(
-                    "Attempt %d/%d failed for chunk starting %s: %s",
-                    attempt,
-                    settings.max_retries,
-                    chunk[0],
-                    exc,
-                )
-
-        if data is None or data.empty:
-            logger.warning("No data returned for chunk starting %s", chunk[0])
+    for idx, ticker in enumerate(tickers, start=1):
+        try:
+            history = _fetch_history_for_ticker(ticker, settings)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to download history for %s: %s", ticker, exc)
             continue
-        for ticker in chunk:
-            try:
-                series = _extract_volume_frame(data, ticker)
-            except Exception as exc:  # defensive against yfinance quirks
-                logger.warning("Failed to parse data for %s: %s", ticker, exc)
-                continue
 
-            if series is None:
-                logger.debug("Skipping %s due to insufficient data", ticker)
-                continue
+        if history is None or history.empty:
+            logger.debug("No history returned for %s", ticker)
+            continue
 
-            snapshot = _build_snapshot(ticker, series)
-            results.append(snapshot)
+        try:
+            series = _extract_volume_frame(history, ticker)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Failed to parse volume data for %s: %s", ticker, exc)
+            continue
+
+        if series is None:
+            logger.debug("Skipping %s due to insufficient data", ticker)
+            continue
+
+        snapshot = _build_snapshot(ticker, series)
+        results.append(snapshot)
+
+        if idx % 500 == 0:
+            logger.info("Processed %d tickers", idx)
 
     logger.info("Generated %d snapshots", len(results))
     return results
