@@ -14,11 +14,10 @@ Supabase를 백엔드로 활용해 미국 주식의 비정상 거래량 급증�
 ```
 stock_alarm/
   pipeline/               # GitHub Actions 및 CLI 파이프라인
-  web/                    # FastAPI 웹 애플리케이션과 정적 자산
+  web_app/                # Flask 웹 애플리케이션과 템플릿/정적 자산
   .github/workflows/      # 정기 실행 워크플로
   Dockerfile              # Azure 배포용 컨테이너 이미지 정의
   requirements_pipeline.txt
-  web/requirements.txt
   supabase_schema.sql     # Supabase 초기 스키마 스크립트
   .env.example            # 로컬 개발용 환경 변수 템플릿
   us_tickers.csv          # 대상 미국 주식 티커 목록
@@ -71,19 +70,20 @@ python -m pipeline.run --log-level DEBUG  # 빠른 검증용 --limit 20 옵션 �
 
 ## 웹 애플리케이션
 
-- FastAPI와 Uvicorn으로 구성되며 `/api/volume-changes`에서 최신 배치의 데이터를 백분율 내림차순으로 제공하고, 페이지 크기는 기본 100행(최대 200행)입니다.
-- 루트 경로(`/`)는 간단한 UI를 렌더링하여 거래량 급증 종목을 강조하고, KST/UTC 기준 수집 시각을 표시합니다.
+- Flask 기반 단일 애플리케이션이며 Supabase REST API를 직접 호출해 데이터를 렌더링합니다.
+- `/api/volume-changes`는 JSON으로 페이지네이션된 데이터를 반환하고, `/`는 서버 사이드 렌더링된 테이블을 제공합니다.
+- `PAGE_SIZE_DEFAULT`, `PAGE_SIZE_MAX`, `REQUEST_TIMEOUT` 환경변수로 페이지 크기와 타임아웃을 조정할 수 있습니다.
 
 ### 로컬 개발
 
 ```bash
-python -m pip install -r web/requirements.txt
+python -m pip install -r web_app/requirements.txt
 export SUPABASE_URL=...
 export SUPABASE_SERVICE_ROLE_KEY=...
-uvicorn web.app.main:app --reload
+python web_app/app.py
 ```
 
-브라우저에서 `http://127.0.0.1:8000`에 접속합니다.
+브라우저에서 `http://127.0.0.1:8000`에 접속합니다. 필요한 경우 `PORT` 환경변수로 포트를 조정할 수 있습니다.
 
 ### Docker 및 Azure 배포
 
@@ -105,10 +105,10 @@ docker run --rm -p 8000:8000 \
 Azure App Service(Web App for Containers)에 배포하려면:
 
 1. 이미지를 Azure Container Registry 또는 Docker Hub에 푸시합니다.
-2. Web App에서 이미지를 가져오도록 설정하고 필요한 환경 변수를 입력합니다.
-3. 시작 명령은 기본값(`uvicorn web.app.main:app --host 0.0.0.0 --port 8000`)을 그대로 사용하거나 Dockerfile의 CMD를 따릅니다.
+2. Web App에서 이미지를 가져오도록 설정하고 필요한 환경 변수를 입력합니다 (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `WEBSITES_PORT=8000` 등).
+3. Dockerfile의 기본 CMD(`python app.py`)가 자동으로 실행되므로 별도 시작 명령은 필요 없습니다.
 
-Supabase 자격 증명은 서버 측 환경 변수로 관리되고, 브라우저는 FastAPI 엔드포인트만 호출합니다.
+Supabase 자격 증명은 서버 측 환경 변수로 관리되고, 브라우저는 Flask 엔드포인트만 호출합니다.
 
 ## 시간대 주의 사항
 

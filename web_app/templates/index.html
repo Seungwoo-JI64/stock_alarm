@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>미국 주식 거래량 급증 모니터</h1>
+        <p>Supabase에서 가져온 최신 배치 데이터를 거래량 변화율 기준으로 정렬해 보여줍니다.</p>
+      </header>
+
+      <section class="summary">
+        <div>총 {{ meta.total }}건 중 {{ meta.page }}페이지 (페이지당 {{ meta.page_size }}건)</div>
+      </section>
+
+      <section class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>티커</th>
+              <th>최신 거래일</th>
+              <th>이전 거래일</th>
+              <th class="numeric">현재 거래량</th>
+              <th class="numeric">이전 거래량</th>
+              <th class="numeric">변화율(%)</th>
+              <th class="numeric">배수(x)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% if items %}
+              {% for row in items %}
+                <tr class="{% if row.is_spike %}spike{% endif %}">
+                  <td>{{ row.ticker }}</td>
+                  <td>{{ row.last_trade_date }}</td>
+                  <td>{{ row.previous_trade_date }}</td>
+                  <td class="numeric">{{ '{:,}'.format(row.latest_volume) if row.latest_volume is not none else 'N/A' }}</td>
+                  <td class="numeric">{{ '{:,}'.format(row.previous_volume) if row.previous_volume is not none else 'N/A' }}</td>
+                  <td class="numeric">
+                    {% if row.volume_change_pct is not none %}
+                      {{ '%+.2f'|format(row.volume_change_pct) }}%
+                    {% else %}
+                      N/A
+                    {% endif %}
+                  </td>
+                  <td class="numeric">
+                    {% if row.volume_ratio is not none %}
+                      {{ '%.2f'|format(row.volume_ratio) }}x
+                    {% else %}
+                      N/A
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            {% else %}
+              <tr>
+                <td colspan="7" class="empty">표시할 데이터가 없습니다.</td>
+              </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </section>
+
+      <section class="pagination">
+        <div>
+          {% if meta.has_previous %}
+            <a class="button" href="?page={{ meta.page - 1 }}&page_size={{ meta.page_size }}">이전</a>
+          {% else %}
+            <span class="button disabled">이전</span>
+          {% endif %}
+
+          {% if meta.has_next %}
+            <a class="button" href="?page={{ meta.page + 1 }}&page_size={{ meta.page_size }}">다음</a>
+          {% else %}
+            <span class="button disabled">다음</span>
+          {% endif %}
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>오류</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>데이터를 불러오지 못했습니다</h1>
+      </header>
+      <section class="error">
+        <p>{{ message }}</p>
+        {% if status_code %}
+          <p>상태 코드: {{ status_code }}</p>
+        {% endif %}
+        <p><a class="button" href="/">대시보드로 돌아가기</a></p>
+      </section>
+    </main>
+  </body>
+</html>
